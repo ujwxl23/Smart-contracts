@@ -5,7 +5,7 @@ import "hardhat/console.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 
-contract FileShare {
+contract DeviceShare {
     uint256 public FIXED_STAKE;
     uint256 private constant SECONDS_IN_YEAR = 31536000; // Number of seconds in a year (365 days)
     address private owner;
@@ -31,6 +31,7 @@ contract FileShare {
         bool[] engage;
         address payable recipient;
         uint256[] stakeids;
+        uint256[] reqDetailsPerDevice;
     }
 
     struct DeviceDetails {
@@ -41,7 +42,9 @@ contract FileShare {
         uint256 devid;
         bool engage;
         address payable recipient;
-        uint256 requestorsID;
+        uint256[] requestIDs;
+        uint256[] requestHRs;
+        uint256 finalRequestID;
         uint256 timestamp;
         uint256 stakeid;
     }
@@ -62,6 +65,10 @@ contract FileShare {
     mapping(address => mapping(uint256 => Stake)) private stakes_pool;
 
     string[] allDevices;
+    uint256[] spaceDevices;
+    uint256[] hrsDevices;
+    uint256[] tokenrateDevices;
+    uint256[] deviceidDevices;
 
     event DeviceAdded(uint256 indexed idOfDevice, uint256 indexed idOfStake);
 
@@ -80,6 +87,9 @@ contract FileShare {
         newProvide.tokenRate.push(_tokenrate);
 
         allDevices.push(_description);
+        spaceDevices.push(_space);
+        hrsDevices.push(_hrs);
+        tokenrateDevices.push(_tokenrate);
 
         ++deviceID;
         DeviceDetails storage newDevice = deviceDetails[deviceID];
@@ -92,6 +102,7 @@ contract FileShare {
         newDevice.tokenRate = _tokenrate;
 
         newProvide.devid.push(deviceID);
+        deviceidDevices.push(deviceID);
 
         require(
             token.transferFrom(msg.sender, address(this), FIXED_STAKE),
@@ -112,13 +123,45 @@ contract FileShare {
         emit DeviceAdded(deviceID, stake_id);
     }
 
-    function getAllDevices() public view returns (string[] memory) {
-        return (allDevices);
+    function getAllDevices()
+        public
+        view
+        returns (
+            string[] memory,
+            uint256[] memory,
+            uint256[] memory,
+            uint256[] memory,
+            uint256[] memory
+        )
+    {
+        return (
+            allDevices,
+            spaceDevices,
+            hrsDevices,
+            tokenrateDevices,
+            deviceidDevices
+        );
     }
 
-    function getDeviceByProvider() public view returns (string[] memory) {
+    function getDeviceByProvider()
+        public
+        view
+        returns (
+            string[] memory,
+            uint256[] memory,
+            uint256[] memory,
+            uint256[] memory,
+            uint256[] memory
+        )
+    {
         Provide storage thisProvide = providers[msg.sender];
-        return (thisProvide.description);
+        return (
+            thisProvide.description,
+            thisProvide.devid,
+            thisProvide.hrs,
+            thisProvide.space,
+            thisProvide.tokenRate
+        );
     }
 
     function getDeviceByDeviceID(
@@ -146,28 +189,35 @@ contract FileShare {
             keccak256(abi.encodePacked(str2));
     }
 
-    function removeDevice(uint256 _deviceID, uint256 _stakeId) public {
+    function removeDevice(uint256 _deviceID) public {
+        DeviceDetails storage thisDevice = deviceDetails[_deviceID];
+        Provide storage thisProvide = providers[thisDevice.recipient];
+        require(thisDevice.engage == false, "The device is already engaged");
         require(stakes_count[msg.sender] > 0, "No stake found");
         require(
-            block.timestamp > stakes_pool[msg.sender][_stakeId].timeStake,
+            block.timestamp >
+                stakes_pool[msg.sender][thisDevice.stakeid].timeStake,
             "Time period has not elapsed."
         );
         require(
-            stakes_pool[msg.sender][_stakeId].amt > 0,
+            stakes_pool[msg.sender][thisDevice.stakeid].amt > 0,
             "Reward alredy withdrawn"
         );
-
-        DeviceDetails storage thisDevice = deviceDetails[_deviceID];
-        require(thisDevice.engage == false, "The device is already engaged");
+        require(
+            thisDevice.recipient == msg.sender,
+            "You are not the owner of the device."
+        );
 
         for (uint256 j = 0; j < allDevices.length; j++) {
             bool same = compare(thisDevice.description, allDevices[j]);
             if (same == true) {
                 delete allDevices[j];
+                delete hrsDevices[j];
+                delete spaceDevices[j];
+                delete tokenrateDevices[j];
+                delete deviceidDevices[j];
             }
         }
-
-        Provide storage thisProvide = providers[thisDevice.recipient];
 
         for (uint256 i = 0; i < (thisProvide.description).length; i++) {
             bool sameName = compare(
@@ -194,86 +244,151 @@ contract FileShare {
             "Stake transfer failed"
         );
 
-        stakes_pool[msg.sender][_stakeId] = Stake(_stakeId, 0, block.timestamp);
+        stakes_pool[msg.sender][thisDevice.stakeid] = Stake(
+            thisDevice.stakeid,
+            0,
+            block.timestamp
+        );
     }
 
-    struct Requestor {
+    struct Request {
         uint256 reqID;
         uint256 devID;
         address deviceOwner;
         uint256 hrsStake;
         bool engage;
         address reqAddress;
+        uint256 req_creation_timestamp;
+        uint256 req_accept_timestamp;
+        uint256[] paid_tokens_array;
+        uint256[] paid_token_timestamps;
+        bool request_end;
     }
-    mapping(uint256 => Requestor) public requestors;
-    uint256 public requestorID;
+    mapping(uint256 => Request) public requests;
+    uint256 public requestID;
 
-    event RequestAdded(uint256 indexed idOfRequestor);
+    struct Requestor {
+        uint256[] reqIDs;
+        address requestorAddress;
+        uint256 paidTokensTotal;
+    }
+    mapping(address => Requestor) public requestors;
 
-    uint256[] ReqDetails;
+    event RequestAdded(uint256 indexed idOfRequest);
 
     function RequestDeviceUse(uint256 _deviceID, uint256 _hrsToStake) public {
         DeviceDetails storage thisDevice = deviceDetails[_deviceID];
         require(thisDevice.engage == false, "The device is already engaged");
-        ++requestorID;
-        Requestor storage newRequestor = requestors[requestorID];
-        newRequestor.reqID = requestorID;
-        newRequestor.devID = _deviceID;
-        newRequestor.deviceOwner = thisDevice.recipient;
-        newRequestor.hrsStake = _hrsToStake;
-        newRequestor.engage = false;
-        newRequestor.reqAddress = msg.sender;
+        ++requestID;
+        Request storage newRequest = requests[requestID];
+        newRequest.reqID = requestID;
+        newRequest.devID = _deviceID;
+        newRequest.deviceOwner = thisDevice.recipient;
+        newRequest.hrsStake = _hrsToStake;
+        newRequest.engage = false;
+        newRequest.reqAddress = msg.sender;
+        newRequest.req_creation_timestamp = block.timestamp;
+        newRequest.request_end = false;
 
-        // (thisDevice.requestorsID).push(requestorID);
-        ReqDetails.push(_deviceID);
-        ReqDetails.push(_hrsToStake);
+        Requestor storage newRequestor = requestors[msg.sender];
+        newRequestor.reqIDs.push(requestID);
+        newRequestor.requestorAddress = msg.sender;
+        newRequestor.paidTokensTotal = _hrsToStake * thisDevice.tokenRate;
 
-        emit RequestAdded(requestorID);
+        thisDevice.requestIDs.push(requestID);
+        thisDevice.requestHRs.push(_hrsToStake);
+
+        Provide storage thisProvide = providers[thisDevice.recipient];
+        thisProvide.reqDetailsPerDevice.push(_deviceID);
+        thisProvide.reqDetailsPerDevice.push(requestID);
+        thisProvide.reqDetailsPerDevice.push(_hrsToStake);
+
+        emit RequestAdded(requestID);
     }
 
-    function ViewDeviceRequestByRequestor(
-        address _deviceOwner,
-        uint256 _reqID
-    ) public view returns (string memory, uint256, address, bool) {
-        Requestor storage thisRequestor = requestors[_reqID];
-        DeviceDetails storage thisDevice = deviceDetails[thisRequestor.devID];
-        return (
-            thisDevice.description,
-            thisRequestor.hrsStake,
-            _deviceOwner,
-            thisRequestor.engage
-        );
+    uint256[] viewDetailsForProvider;
+
+    function ViewDeviceRequestByRequestor()
+        public
+        view
+        returns (uint256[] memory)
+    {
+        Provide storage thisProvide = providers[msg.sender];
+        return (thisProvide.reqDetailsPerDevice);
     }
 
     function AcceptDeviceRequestByProvider(uint256 _reqID) public {
         Provide storage thisProvide = providers[msg.sender];
-        Requestor storage thisRequestor = requestors[_reqID];
+        Request storage thisRequest = requests[_reqID];
         for (uint256 i = 0; i < (thisProvide.devid).length; i++) {
-            if (thisProvide.devid[i] == thisRequestor.devID) {
+            if (thisProvide.devid[i] == thisRequest.devID) {
                 require(
                     thisProvide.engage[i] == false,
                     "The provider is already busy, no resources available."
                 );
                 thisProvide.engage[i] = true;
-                thisRequestor.engage = true;
+                thisRequest.engage = true;
+                thisRequest.paid_tokens_array.push(0);
+                thisRequest.paid_token_timestamps.push(block.timestamp);
             }
         }
-        DeviceDetails storage thisDevice = deviceDetails[thisRequestor.devID];
-        thisDevice.requestorsID = _reqID;
+
+        DeviceDetails storage thisDevice = deviceDetails[thisRequest.devID];
+        thisDevice.finalRequestID = _reqID;
         thisDevice.timestamp = block.timestamp;
         thisDevice.engage = true;
+
+        thisRequest.req_accept_timestamp = block.timestamp;
+
+        token.transferFrom(
+            thisRequest.reqAddress,
+            address(this),
+            thisDevice.tokenRate * thisRequest.hrsStake
+        );
     }
+
+    event EarnedRewardByProvider(uint256 indexed Reward);
 
     function TransferEarnedTokenToProvider(
         uint256 _deviceid,
-        address _provider
+        uint256 _requestID
+    ) public payable {
+        Request storage thisRequest = requests[_requestID];
+        DeviceDetails storage thisDevice = deviceDetails[_deviceid];
+        uint256 lastOfTimestampArry = (thisRequest.paid_token_timestamps)
+            .length - 1;
+        uint256 timeElapsed = block.timestamp -
+            thisRequest.paid_token_timestamps[lastOfTimestampArry];
+        uint256 noOfHours = timeElapsed / 3600;
+        uint256 reward = noOfHours * thisDevice.tokenRate;
+
+        token.transfer(msg.sender, reward);
+
+        thisRequest.paid_tokens_array.push(reward);
+        thisRequest.paid_token_timestamps.push(block.timestamp);
+
+        Requestor storage thisRequestor = requestors[thisRequest.reqAddress];
+        thisRequestor.paidTokensTotal = thisRequestor.paidTokensTotal - reward;
+
+        emit EarnedRewardByProvider(reward);
+    }
+
+    function TransferTokenToProviderInternal(
+        uint256 _deviceid,
+        address _provider,
+        uint256 _requestid
     ) public payable returns (uint256 Reward) {
         Provide storage thisProvide = providers[_provider];
         DeviceDetails storage thisDevice = deviceDetails[_deviceid];
+        Request storage thisRequest = requests[_requestid];
         for (uint256 i = 0; i < (thisProvide.stakeids).length; i++) {
             if (thisProvide.stakeids[i] == thisDevice.stakeid) {
                 uint256 amount = stakes_pool[_provider][thisDevice.stakeid].amt;
-                uint256 timeElapsed = block.timestamp - thisDevice.timestamp;
+                uint256 lastOfTimestampArry = (
+                    thisRequest.paid_token_timestamps
+                ).length - 1;
+                uint256 timeElapsed = block.timestamp -
+                    thisRequest.paid_token_timestamps[lastOfTimestampArry];
                 uint256 noOfHours = timeElapsed / 3600;
                 uint256 reward = amount + (noOfHours * thisDevice.tokenRate);
 
@@ -286,22 +401,33 @@ contract FileShare {
                     block.timestamp
                 );
 
+                Requestor storage thisRequestor = requestors[
+                    thisRequest.reqAddress
+                ];
+                thisRequestor.paidTokensTotal =
+                    thisRequestor.paidTokensTotal -
+                    (noOfHours * thisDevice.tokenRate);
+
+                thisRequest.paid_tokens_array.push(
+                    noOfHours * thisDevice.tokenRate
+                );
+                thisRequest.paid_token_timestamps.push(block.timestamp);
+
                 return (reward);
             }
         }
     }
 
-    function TransferTokenToRequestor(
+    function TransferTokenFromRequestorInternal(
         uint256 _requestorID
     ) public payable returns (uint256) {
-        Requestor storage thisRequestor = requestors[_requestorID];
-        DeviceDetails storage thisDevice = deviceDetails[thisRequestor.devID];
-        uint256 timeElapsed = block.timestamp - thisDevice.timestamp;
+        Request storage thisRequest = requests[_requestorID];
+        DeviceDetails storage thisDevice = deviceDetails[thisRequest.devID];
+        uint256 timeElapsed = block.timestamp -
+            thisRequest.req_accept_timestamp;
         uint256 noOfHours = timeElapsed / 3600;
-        uint256 leftHours = thisRequestor.hrsStake - noOfHours;
+        uint256 leftHours = thisRequest.hrsStake - noOfHours;
         uint256 refund = leftHours * thisDevice.tokenRate;
-
-        token.transfer(thisRequestor.reqAddress, refund);
 
         return (refund);
     }
@@ -315,22 +441,35 @@ contract FileShare {
         uint256 _deviceID,
         uint256 _reqID
     ) public {
-        Requestor storage thisRequestor = requestors[_reqID];
+        Request storage thisRequest = requests[_reqID];
         DeviceDetails storage thisDevice = deviceDetails[_deviceID];
 
         require(
-            thisRequestor.devID == _deviceID,
+            thisRequest.devID == _deviceID,
             "This device doesn't belong to you."
         );
 
-        uint256 providerToken = TransferEarnedTokenToProvider(
+        uint256 providerToken = TransferTokenToProviderInternal(
             _deviceID,
-            thisDevice.recipient
+            thisDevice.recipient,
+            _reqID
         );
-        uint256 requestorToken = TransferTokenToRequestor(_reqID);
+        uint256 requestorToken = TransferTokenFromRequestorInternal(_reqID);
 
-        thisRequestor.engage = false;
+        thisRequest.engage = false;
+        thisRequest.request_end = true;
 
         emit RewardEarned(providerToken, requestorToken);
+    }
+
+    function TransferTokenToRequestor(uint256 _reqID) public payable {
+        Requestor storage thisRequestor = requestors[msg.sender];
+        Request storage thisRequest = requests[_reqID];
+        require(
+            thisRequest.request_end == true,
+            "The device of the this request has not ended"
+        );
+        token.transfer(msg.sender, thisRequestor.paidTokensTotal);
+        thisRequestor.paidTokensTotal = 0;
     }
 }
